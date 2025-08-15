@@ -69,28 +69,28 @@ def get_stock_data(ticker, period="6mo"):
 # -------------------
 def detect_vcp(df):
     """Return contraction percentages and peak/trough points."""
-    # Ensure we have a DataFrame
+    # Ensure valid DataFrame
     if not isinstance(df, pd.DataFrame):
         return [], [], []
 
     df = df.copy()
 
-    # Always create max/min columns — no matter what
+    # Always create these columns so dropna() never fails
     df["max"] = np.nan
     df["min"] = np.nan
 
-    # Bail early if High/Low missing
+    # If High/Low missing, bail early
     if "High" not in df.columns or "Low" not in df.columns:
         return [], [], []
 
-    # Find local peaks/troughs
+    # Find local peaks and troughs
     peak_idx = argrelextrema(df["High"].values, np.greater, order=5)[0]
     trough_idx = argrelextrema(df["Low"].values, np.less, order=5)[0]
 
     df.iloc[peak_idx, df.columns.get_loc("max")] = df["High"].iloc[peak_idx]
     df.iloc[trough_idx, df.columns.get_loc("min")] = df["Low"].iloc[trough_idx]
 
-    # These will now never KeyError
+    # Now these calls will never KeyError
     peaks = df.dropna(subset=["max"])
     troughs = df.dropna(subset=["min"])
 
