@@ -16,7 +16,6 @@ BASE_URL = "https://www.alphavantage.co/query"
 # DATA FETCH
 # -------------------
 def fetch_alpha_vantage(ticker):
-    """Fetch daily OHLCV from Alpha Vantage."""
     try:
         params = {
             "function": "TIME_SERIES_DAILY_ADJUSTED",
@@ -28,7 +27,6 @@ def fetch_alpha_vantage(ticker):
         data = r.json()
         if "Time Series (Daily)" not in data:
             return None
-
         df = pd.DataFrame(data["Time Series (Daily)"]).T
         df = df.rename(columns={
             "1. open": "Open",
@@ -44,8 +42,7 @@ def fetch_alpha_vantage(ticker):
     except:
         return None
 
-def fetch_yahoo(ticker, period="6mo"):
-    """Fallback to Yahoo Finance."""
+def fetch_yahoo(ticker, period="1y"):
     try:
         df = yf.download(ticker, period=period, interval="1d")
         df = df[["Open", "High", "Low", "Close", "Volume"]]
@@ -54,8 +51,7 @@ def fetch_yahoo(ticker, period="6mo"):
     except:
         return None
 
-def get_stock_data(ticker, period="6mo"):
-    """Try Alpha Vantage first, then Yahoo Finance."""
+def get_stock_data(ticker, period="1y"):
     df = fetch_alpha_vantage(ticker)
     if df is None or df.empty:
         df = fetch_yahoo(ticker, period)
@@ -65,33 +61,25 @@ def get_stock_data(ticker, period="6mo"):
 # VCP DETECTION
 # -------------------
 def detect_vcp(df):
-    """Return contraction percentages and peak/trough points without KeyError."""
     if not isinstance(df, pd.DataFrame):
         return [], [], []
-
-    df = df.copy()
-
     if "High" not in df.columns or "Low" not in df.columns:
         return [], [], []
 
-    # Create empty columns for peaks/troughs
+    df = df.copy()
     df["max"] = np.nan
     df["min"] = np.nan
 
-    # Find local peaks/troughs
     peak_idx = argrelextrema(df["High"].values, np.greater, order=5)[0]
     trough_idx = argrelextrema(df["Low"].values, np.less, order=5)[0]
 
     df.loc[df.index[peak_idx], "max"] = df["High"].iloc[peak_idx]
     df.loc[df.index[trough_idx], "min"] = df["Low"].iloc[trough_idx]
 
-    # Filter without dropna() to avoid KeyError
     peaks = df[df["max"].notna()]
     troughs = df[df["min"].notna()]
 
-    contractions = []
-    peak_points, trough_points = [], []
-
+    contractions, peak_points, trough_points = [], [], []
     for i in range(min(len(peaks), len(troughs))):
         peak_price = peaks.iloc[i]["max"]
         trough_price = troughs.iloc[i]["min"]
@@ -99,84 +87,82 @@ def detect_vcp(df):
         contractions.append(round(contraction_pct, 2))
         peak_points.append((peaks.index[i], peak_price))
         trough_points.append((troughs.index[i], trough_price))
-
     return contractions, peak_points, trough_points
+
+# -------------------
+# FILTERS
+# -------------------
+def contractions_meet_criteria(contractions):
+    if len(contractions) < 3:
+        return False
+    last3 = contractions[-3:]
+    return sum(1 for i in range(1, len(last3)) if last3[i] < last3[i-1]) >= 2
+
+def volume_dry_up(df):
+    if len(df) < 50:
+        return False
+    recent_vol = df["Volume"][-10:].mean()
+    peak_vol = df["Volume"][-50:].max()
+    return recent_vol < 0.5 * peak_vol
+
+@st.cache_data
+def get_sp500_tickers_and_sectors():
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    table = pd.read_html(url)[0]
+    return table[["Symbol", "GICS Sector"]]
+
+def relative_strength(df, spy_df):
+    rs = df["Close"] / spy_df["Close"]
+    rs_ma50 = rs.rolling(50).mean()
+    return rs.iloc[-1], rs_ma50.iloc[-1]
 
 # -------------------
 # PLOTTING
 # -------------------
 def plot_vcp(df, ticker, peak_points, trough_points):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios':[3, 1]})
-
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios":[3,1]})
     ax1.plot(df.index, df["Close"], label="Close Price", color="blue")
     ax1.set_title(f"{ticker} - Volatility Contraction Pattern")
     ax1.set_ylabel("Price")
-
     for date, price in peak_points:
         ax1.scatter(date, price, color="red", marker="^", s=100)
     for date, price in trough_points:
         ax1.scatter(date, price, color="green", marker="v", s=100)
-
-    ax1.legend()
-    ax1.grid(True)
-
+    ax1.legend(); ax1.grid(True)
     ax2.bar(df.index, df["Volume"], color="gray")
-    ax2.set_ylabel("Volume")
-    ax2.grid(True)
-
+    ax2.set_ylabel("Volume"); ax2.grid(True)
     plt.tight_layout()
     st.pyplot(fig)
 
 # -------------------
-# S&P 500 TICKERS
-# -------------------
-@st.cache_data
-def get_sp500_tickers():
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    table = pd.read_html(url)[0]
-    return table["Symbol"].tolist()
-
-# -------------------
 # STREAMLIT UI
 # -------------------
-st.title("📉 Volatility Contraction Pattern (VCP) Screener")
-st.write("Scans your input tickers + all S&P 500 tickers for VCP patterns.")
-
+st.title("📉 Volatility Contraction Pattern (VCP) Screener - Minervini Style")
 tickers_input = st.text_area("Additional Tickers (comma-separated)", value="NVDA,AAPL,MSFT,TSLA")
-period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
 
 if st.button("Run Screener"):
+    # Get SPY data for RS calculation
+    spy_df = get_stock_data("SPY", "1y")
+    sp500_df = get_sp500_tickers_and_sectors()
+
+    # Relative strength sector filter
+    sector_strength = {}
+    for sector in sp500_df["GICS Sector"].unique():
+        tickers = sp500_df[sp500_df["GICS Sector"] == sector]["Symbol"].tolist()
+        rs_values = []
+        for t in tickers:
+            df = get_stock_data(t, "1y")
+            if df is None or df.empty:
+                continue
+            rs, rs_ma50 = relative_strength(df, spy_df)
+            if not np.isnan(rs) and not np.isnan(rs_ma50):
+                rs_values.append(rs / rs_ma50)
+        sector_strength[sector] = np.mean(rs_values) if rs_values else 0
+    strong_sectors = [s for s,v in sector_strength.items() if v > 1]
+
+    # Final tickers to scan: input + strong stocks in strong sectors
     input_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-    sp500_tickers = get_sp500_tickers()
-    tickers_to_scan = sorted(set(input_tickers + sp500_tickers))
-
-    results = []
-    for ticker in tickers_to_scan:
-        df = get_stock_data(ticker, period)
-        if df is None or df.empty:
-            continue
-
-        contractions, peaks, troughs = detect_vcp(df)
-        if len(contractions) >= 3:
-            if contractions[-1] < contractions[-2] < contractions[-3]:
-                results.append({
-                    "Ticker": ticker,
-                    "Last Contraction %": contractions[-1],
-                    "Data": df,
-                    "Peaks": peaks,
-                    "Troughs": troughs
-                })
-
-    if results:
-        df_results = pd.DataFrame(
-            [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
-        ).sort_values("Last Contraction %")
-        st.dataframe(df_results)
-
-        selected_ticker = st.selectbox("Select ticker to view chart", df_results["Ticker"].tolist())
-        for r in results:
-            if r["Ticker"] == selected_ticker:
-                plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
-                break
-    else:
-        st.warning("No VCP candidates found.")
+    strong_stocks = []
+    for _, row in sp500_df.iterrows():
+        if row["GICS Sector"] in strong_sectors:
+            df = get_stock_data(row["Symbol"], "1y")
