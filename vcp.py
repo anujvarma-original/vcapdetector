@@ -114,7 +114,7 @@ def get_sp500_tickers_and_sectors():
 def relative_strength(df, spy_df):
     rs_series = df["Close"] / spy_df["Close"]
     rs_ma50_series = rs_series.rolling(50).mean()
-    return rs_series.iloc[-1], rs_ma50_series.iloc[-1]  # FIX: return last value only
+    return rs_series.iloc[-1], rs_ma50_series.iloc[-1]  # FIX: last values only
 
 # -------------------
 # PLOTTING
@@ -157,7 +157,7 @@ if st.button("Run Screener"):
             if not np.isnan(rs) and not np.isnan(rs_ma50):
                 rs_values.append(rs / rs_ma50)
         sector_strength[sector] = np.mean(rs_values) if rs_values else 0
-    strong_sectors = [s for s,v in sector_strength.items() if v > 1]
+    strong_sectors = [s for s, v in sector_strength.items() if v > 1]
 
     # Strong stocks in strong sectors
     input_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
@@ -189,24 +189,27 @@ if st.button("Run Screener"):
                 "Troughs": troughs
             })
 
-if results:
-    df_results = pd.DataFrame(
-        [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
-    ).sort_values("Last Contraction %")
+    # -------------------
+    # SAFE RESULTS DISPLAY
+    # -------------------
+    if results:
+        df_results = pd.DataFrame(
+            [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
+        ).sort_values("Last Contraction %")
 
-    if not df_results.empty:
-        st.dataframe(df_results)
+        if not df_results.empty:
+            st.dataframe(df_results)
 
-        ticker_list = df_results["Ticker"].tolist()
-        if ticker_list:
-            selected_ticker = st.selectbox("Select ticker to view chart", ticker_list)
-            for r in results:
-                if r["Ticker"] == selected_ticker:
-                    plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
-                    break
+            ticker_list = df_results["Ticker"].tolist()
+            if ticker_list:
+                selected_ticker = st.selectbox("Select ticker to view chart", ticker_list)
+                for r in results:
+                    if r["Ticker"] == selected_ticker:
+                        plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
+                        break
+            else:
+                st.info("No tickers available for chart display.")
         else:
-            st.info("No tickers available for chart display.")
+            st.info("No valid results to display.")
     else:
-        st.info("No valid results to display.")
-else:
-    st.warning("No VCP candidates found under current filters.")
+        st.warning("No VCP candidates found under current filters.")
