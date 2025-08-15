@@ -31,7 +31,6 @@ def last_sma(values: List[float], window: int) -> Optional[float]:
     return float(sum(values[-window:]) / window)
 
 def trim_to_period(data: Dict[str, List], period_days: int) -> Optional[Dict[str, List]]:
-    """Trim OHLCV dict to last period_days days."""
     if not data or not data.get("dates"):
         return None
     cutoff = data["dates"][-1].timestamp() - period_days * 86400
@@ -110,7 +109,6 @@ def fetch_yahoo_json(symbol: str, period: str = "1y", interval: str = "1d") -> O
         return None
 
 def fetch_stooq(symbol: str) -> Optional[Dict[str, List]]:
-    """Fetch daily OHLCV from Stooq.com (no API key required)."""
     try:
         url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
         r = requests.get(url, timeout=10)
@@ -132,9 +130,31 @@ def fetch_stooq(symbol: str) -> Optional[Dict[str, List]]:
     except:
         return None
 
+def fetch_spy_static_csv() -> Optional[Dict[str, List]]:
+    """Static CSV backup — always available."""
+    try:
+        url = "https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv"
+        r = requests.get(url, timeout=10)
+        lines = r.text.strip().split("\n")
+        if len(lines) <= 1:
+            return None
+        dates, o, h, l, c, vol = [], [], [], [], [], []
+        for row in lines[1:]:
+            try:
+                d, op, hi, lo, cl, v = row.split(",")
+                dates.append(parse_date_ymd(d))
+                o.append(float(op)); h.append(float(hi)); l.append(float(lo))
+                c.append(float(cl)); vol.append(float(v))
+            except:
+                continue
+        if not dates:
+            return None
+        return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": vol}
+    except:
+        return None
+
 @st.cache_data(show_spinner=False)
 def get_spy_data(period_days=365, prefer_alpha=True):
-    """Get SPY data with triple fallback: Alpha -> Yahoo -> Stooq."""
     spy = None
     if prefer_alpha and ALPHA_VANTAGE_API_KEY:
         spy = fetch_alpha_vantage("SPY", outsize="full")
@@ -146,6 +166,10 @@ def get_spy_data(period_days=365, prefer_alpha=True):
             return trim_to_period(spy, period_days)
     if spy is None:
         spy = fetch_stooq("SPY")
+        if spy:
+            return trim_to_period(spy, period_days)
+    if spy is None:
+        spy = fetch_spy_static_csv()
         if spy:
             return trim_to_period(spy, period_days)
     return spy
@@ -164,7 +188,7 @@ def get_stock_data(symbol: str, period_days: int = 365, prefer_alpha: bool = Tru
     return trim_to_period(data, period_days) if data else None
 
 # -------------------
-# S&P 500 scrape
+# S&P scrape
 # -------------------
 @st.cache_data(show_spinner=False)
 def get_sp500_tickers_and_sectors() -> List[Tuple[str, str]]:
@@ -259,7 +283,7 @@ def plot_vcp(stock, ticker, peaks, troughs):
 # -------------------
 # Streamlit UI
 # -------------------
-st.title("📉 VCP Screener (No pandas) — Triple SPY Fallback")
+st.title("📉 VCP Screener (No pandas) — 4-Level SPY Fallback")
 prefer_alpha = st.toggle("Prefer Alpha Vantage", value=True)
 user_tickers_input = st.text_area("Additional Tickers", value="NVDA,AAPL,MSFT,TSLA")
 run_btn = st.button("Run Screener")
@@ -267,7 +291,7 @@ run_btn = st.button("Run Screener")
 if run_btn:
     spy = get_spy_data(period_days=365, prefer_alpha=prefer_alpha)
     if spy is None:
-        st.error("Could not fetch SPY data from Alpha, Yahoo, or Stooq.")
+        st.error("Could not fetch SPY data from any source.")
         st.stop()
 
     sp_list = get_sp500_tickers_and_sectors()
@@ -275,7 +299,6 @@ if run_btn:
         st.error("Could not load S&P 500 tickers.")
         st.stop()
 
-    # Strong sector calculation
     sector_strength = {}
     for sector in sorted(set(sec for _, sec in sp_list)):
         tickers_in_sector = [sym for sym, sec in sp_list if sec == sector]
