@@ -189,15 +189,24 @@ if st.button("Run Screener"):
                 "Troughs": troughs
             })
 
-    if results:
-        df_results = pd.DataFrame(
-            [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
-        ).sort_values("Last Contraction %")
+if results:
+    df_results = pd.DataFrame(
+        [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
+    ).sort_values("Last Contraction %")
+
+    if not df_results.empty:
         st.dataframe(df_results)
-        selected_ticker = st.selectbox("Select ticker to view chart", df_results["Ticker"].tolist())
-        for r in results:
-            if r["Ticker"] == selected_ticker:
-                plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
-                break
+
+        ticker_list = df_results["Ticker"].tolist()
+        if ticker_list:
+            selected_ticker = st.selectbox("Select ticker to view chart", ticker_list)
+            for r in results:
+                if r["Ticker"] == selected_ticker:
+                    plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
+                    break
+        else:
+            st.info("No tickers available for chart display.")
     else:
-        st.warning("No VCP candidates found under current filters.")
+        st.info("No valid results to display.")
+else:
+    st.warning("No VCP candidates found under current filters.")
