@@ -57,9 +57,14 @@ def get_stock_data(ticker, period="6mo"):
 def detect_vcp(df):
     """Return contraction percentages and peak/trough points."""
     df = df.copy()
-    df['max'] = np.nan
-    df['min'] = np.nan
 
+    # Ensure required columns exist
+    if 'max' not in df.columns:
+        df['max'] = np.nan
+    if 'min' not in df.columns:
+        df['min'] = np.nan
+
+    # Find local peaks and troughs
     peak_idx = argrelextrema(df['High'].values, np.greater, order=5)[0]
     trough_idx = argrelextrema(df['Low'].values, np.less, order=5)[0]
 
@@ -72,16 +77,17 @@ def detect_vcp(df):
     contractions = []
     peak_points, trough_points = [], []
 
+    # Make sure to only iterate while we have both peaks and troughs
     for i in range(min(len(peaks), len(troughs))):
-        if i < len(troughs):
-            peak_price = peaks.iloc[i]['max']
-            trough_price = troughs.iloc[i]['min']
-            contraction_pct = (peak_price - trough_price) / peak_price * 100
-            contractions.append(round(contraction_pct, 2))
-            peak_points.append((peaks.index[i], peak_price))
-            trough_points.append((troughs.index[i], trough_price))
+        peak_price = peaks.iloc[i]['max']
+        trough_price = troughs.iloc[i]['min']
+        contraction_pct = (peak_price - trough_price) / peak_price * 100
+        contractions.append(round(contraction_pct, 2))
+        peak_points.append((peaks.index[i], peak_price))
+        trough_points.append((troughs.index[i], trough_price))
 
     return contractions, peak_points, trough_points
+
 
 # -------------------
 # PLOTTING
