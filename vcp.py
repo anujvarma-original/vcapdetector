@@ -112,9 +112,9 @@ def get_sp500_tickers_and_sectors():
     return table[["Symbol", "GICS Sector"]]
 
 def relative_strength(df, spy_df):
-    rs = df["Close"] / spy_df["Close"]
-    rs_ma50 = rs.rolling(50).mean()
-    return rs.iloc[-1], rs_ma50.iloc[-1]
+    rs_series = df["Close"] / spy_df["Close"]
+    rs_ma50_series = rs_series.rolling(50).mean()
+    return rs_series.iloc[-1], rs_ma50_series.iloc[-1]  # FIX: return last value only
 
 # -------------------
 # PLOTTING
@@ -141,11 +141,10 @@ st.title("📉 Volatility Contraction Pattern (VCP) Screener - Minervini Style")
 tickers_input = st.text_area("Additional Tickers (comma-separated)", value="NVDA,AAPL,MSFT,TSLA")
 
 if st.button("Run Screener"):
-    # Get SPY data for RS calculation
     spy_df = get_stock_data("SPY", "1y")
     sp500_df = get_sp500_tickers_and_sectors()
 
-    # Relative strength sector filter
+    # Determine strong sectors
     sector_strength = {}
     for sector in sp500_df["GICS Sector"].unique():
         tickers = sp500_df[sp500_df["GICS Sector"] == sector]["Symbol"].tolist()
@@ -160,9 +159,45 @@ if st.button("Run Screener"):
         sector_strength[sector] = np.mean(rs_values) if rs_values else 0
     strong_sectors = [s for s,v in sector_strength.items() if v > 1]
 
-    # Final tickers to scan: input + strong stocks in strong sectors
+    # Strong stocks in strong sectors
     input_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
     strong_stocks = []
     for _, row in sp500_df.iterrows():
         if row["GICS Sector"] in strong_sectors:
             df = get_stock_data(row["Symbol"], "1y")
+            if df is None or df.empty:
+                continue
+            rs, rs_ma50 = relative_strength(df, spy_df)
+            if rs > rs_ma50:
+                strong_stocks.append(row["Symbol"])
+
+    tickers_to_scan = sorted(set(input_tickers + strong_stocks))
+
+    # Scan for VCP
+    results = []
+    for ticker in tickers_to_scan:
+        df = get_stock_data(ticker, "1y")
+        if df is None or df.empty:
+            continue
+        contractions, peaks, troughs = detect_vcp(df)
+        if contractions_meet_criteria(contractions) and volume_dry_up(df):
+            results.append({
+                "Ticker": ticker,
+                "Last Contraction %": contractions[-1],
+                "Data": df,
+                "Peaks": peaks,
+                "Troughs": troughs
+            })
+
+    if results:
+        df_results = pd.DataFrame(
+            [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
+        ).sort_values("Last Contraction %")
+        st.dataframe(df_results)
+        selected_ticker = st.selectbox("Select ticker to view chart", df_results["Ticker"].tolist())
+        for r in results:
+            if r["Ticker"] == selected_ticker:
+                plot_vcp(r["Data"], r["Ticker"], r["Peaks"], r["Troughs"])
+                break
+    else:
+        st.warning("No VCP candidates found under current filters.")
