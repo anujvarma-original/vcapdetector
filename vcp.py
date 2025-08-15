@@ -114,7 +114,12 @@ def get_sp500_tickers_and_sectors():
 def relative_strength(df, spy_df):
     rs_series = df["Close"] / spy_df["Close"]
     rs_ma50_series = rs_series.rolling(50).mean()
-    return rs_series.iloc[-1], rs_ma50_series.iloc[-1]  # FIX: last values only
+
+    # Convert to floats to avoid ambiguous truth value
+    rs_val = float(rs_series.iloc[-1]) if not pd.isna(rs_series.iloc[-1]) else np.nan
+    rs_ma50_val = float(rs_ma50_series.iloc[-1]) if not pd.isna(rs_ma50_series.iloc[-1]) else np.nan
+
+    return rs_val, rs_ma50_val
 
 # -------------------
 # PLOTTING
@@ -154,7 +159,7 @@ if st.button("Run Screener"):
             if df is None or df.empty:
                 continue
             rs, rs_ma50 = relative_strength(df, spy_df)
-            if not np.isnan(rs) and not np.isnan(rs_ma50):
+            if not pd.isna(rs) and not pd.isna(rs_ma50):
                 rs_values.append(rs / rs_ma50)
         sector_strength[sector] = np.mean(rs_values) if rs_values else 0
     strong_sectors = [s for s, v in sector_strength.items() if v > 1]
@@ -168,7 +173,7 @@ if st.button("Run Screener"):
             if df is None or df.empty:
                 continue
             rs, rs_ma50 = relative_strength(df, spy_df)
-            if rs > rs_ma50:
+            if not pd.isna(rs) and not pd.isna(rs_ma50) and rs > rs_ma50:
                 strong_stocks.append(row["Symbol"])
 
     tickers_to_scan = sorted(set(input_tickers + strong_stocks))
@@ -189,9 +194,7 @@ if st.button("Run Screener"):
                 "Troughs": troughs
             })
 
-    # -------------------
     # SAFE RESULTS DISPLAY
-    # -------------------
     if results:
         df_results = pd.DataFrame(
             [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
@@ -199,7 +202,6 @@ if st.button("Run Screener"):
 
         if not df_results.empty:
             st.dataframe(df_results)
-
             ticker_list = df_results["Ticker"].tolist()
             if ticker_list:
                 selected_ticker = st.selectbox("Select ticker to view chart", ticker_list)
