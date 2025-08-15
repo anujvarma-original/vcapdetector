@@ -9,7 +9,8 @@ from scipy.signal import argrelextrema
 # -------------------
 # CONFIG
 # -------------------
-ALPHA_VANTAGE_API_KEY = "YOUR_ALPHA_VANTAGE_KEY"  # Replace with your key
+# API key from Streamlit secrets
+ALPHA_VANTAGE_API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
 BASE_URL = "https://www.alphavantage.co/query"
 
 # -------------------
@@ -28,7 +29,7 @@ def fetch_alpha_vantage(ticker):
         data = r.json()
         if "Time Series (Daily)" not in data:
             return None
-        
+
         df = pd.DataFrame(data["Time Series (Daily)"]).T
         df = df.rename(columns={
             "1. open": "Open",
@@ -37,25 +38,27 @@ def fetch_alpha_vantage(ticker):
             "4. close": "Close",
             "6. volume": "Volume"
         })
-        
-        # Keep only OHLCV
+
+        # Keep only OHLCV and ensure float
         df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
         return df
-    except Exception as e:
-        print(f"Alpha Vantage fetch failed for {ticker}: {e}")
+    except:
         return None
 
 def fetch_yahoo(ticker, period="6mo"):
     """Fallback to Yahoo Finance."""
     try:
         df = yf.download(ticker, period=period, interval="1d")
+        df = df[["Open", "High", "Low", "Close", "Volume"]]
+        df.dropna(inplace=True)
         return df
     except:
         return None
 
 def get_stock_data(ticker, period="6mo"):
+    """Try Alpha Vantage first, then Yahoo Finance."""
     df = fetch_alpha_vantage(ticker)
     if df is None or df.empty:
         df = fetch_yahoo(ticker, period)
@@ -68,11 +71,13 @@ def detect_vcp(df):
     """Return contraction percentages and peak/trough points."""
     df = df.copy()
 
-    # Ensure required columns exist
-    if 'max' not in df.columns:
-        df['max'] = np.nan
-    if 'min' not in df.columns:
-        df['min'] = np.nan
+    # Always create max/min columns
+    df['max'] = np.nan
+    df['min'] = np.nan
+
+    # Safety check for required columns
+    if 'High' not in df.columns or 'Low' not in df.columns:
+        return [], [], []
 
     # Find local peaks and troughs
     peak_idx = argrelextrema(df['High'].values, np.greater, order=5)[0]
@@ -87,7 +92,6 @@ def detect_vcp(df):
     contractions = []
     peak_points, trough_points = [], []
 
-    # Make sure to only iterate while we have both peaks and troughs
     for i in range(min(len(peaks), len(troughs))):
         peak_price = peaks.iloc[i]['max']
         trough_price = troughs.iloc[i]['min']
@@ -97,7 +101,6 @@ def detect_vcp(df):
         trough_points.append((troughs.index[i], trough_price))
 
     return contractions, peak_points, trough_points
-
 
 # -------------------
 # PLOTTING
@@ -155,7 +158,9 @@ if st.button("Run Screener"):
                 })
 
     if results:
-        df_results = pd.DataFrame([{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results])
+        df_results = pd.DataFrame(
+            [{"Ticker": r["Ticker"], "Last Contraction %": r["Last Contraction %"]} for r in results]
+        )
         df_results.sort_values("Last Contraction %", inplace=True)
         st.dataframe(df_results)
 
