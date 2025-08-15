@@ -28,13 +28,23 @@ def fetch_alpha_vantage(ticker):
         data = r.json()
         if "Time Series (Daily)" not in data:
             return None
+        
         df = pd.DataFrame(data["Time Series (Daily)"]).T
-        df.columns = ["Open","High","Low","Close","Adj Close","Volume","Dividend","Split"]
-        df = df.astype(float)
+        df = df.rename(columns={
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close",
+            "6. volume": "Volume"
+        })
+        
+        # Keep only OHLCV
+        df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
         return df
-    except:
+    except Exception as e:
+        print(f"Alpha Vantage fetch failed for {ticker}: {e}")
         return None
 
 def fetch_yahoo(ticker, period="6mo"):
