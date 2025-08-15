@@ -30,6 +30,18 @@ def last_sma(values: List[float], window: int) -> Optional[float]:
         return None
     return float(sum(values[-window:]) / window)
 
+def trim_to_period(data: Dict[str, List], period_days: int) -> Optional[Dict[str, List]]:
+    """Trim OHLCV dict to last period_days days."""
+    if not data or not data.get("dates"):
+        return None
+    cutoff = data["dates"][-1].timestamp() - period_days * 86400
+    keep_idx = [i for i, d in enumerate(data["dates"]) if d.timestamp() >= cutoff]
+    if not keep_idx:
+        return None
+    for k in data:
+        data[k] = [data[k][i] for i in keep_idx]
+    return data
+
 # -------------------
 # DATA FETCH
 # -------------------
@@ -48,7 +60,6 @@ def fetch_alpha_vantage(symbol: str, outsize: str = "full") -> Optional[Dict[str
         ts = data.get("Time Series (Daily)")
         if not ts:
             return None
-
         recs = []
         for d, v in ts.items():
             try:
@@ -60,15 +71,14 @@ def fetch_alpha_vantage(symbol: str, outsize: str = "full") -> Optional[Dict[str
                     float(v["4. close"]),
                     float(v["6. volume"])
                 ))
-            except Exception:
+            except:
                 continue
         recs.sort(key=lambda x: x[0])
         if not recs:
             return None
-
         dates, o, h, l, c, vol = zip(*recs)
         return {"dates": list(dates), "open": list(o), "high": list(h), "low": list(l), "close": list(c), "volume": list(vol)}
-    except Exception:
+    except:
         return None
 
 def fetch_yahoo_json(symbol: str, period: str = "1y", interval: str = "1d") -> Optional[Dict[str, List]]:
@@ -85,26 +95,60 @@ def fetch_yahoo_json(symbol: str, period: str = "1y", interval: str = "1d") -> O
         quotes = result.get("indicators", {}).get("quote", [{}])[0]
         if not ts or not quotes:
             return None
-
-        opens = quotes.get("open", [])
-        highs = quotes.get("high", [])
-        lows = quotes.get("low", [])
-        closes = quotes.get("close", [])
-        vols = quotes.get("volume", [])
-
         dates, o, h, l, c, v = [], [], [], [], [], []
         for i in range(len(ts)):
-            vals = (opens[i], highs[i], lows[i], closes[i], vols[i])
+            vals = (quotes["open"][i], quotes["high"][i], quotes["low"][i], quotes["close"][i], quotes["volume"][i])
             if None in vals:
                 continue
             dates.append(to_date(ts[i]))
-            o.append(float(opens[i])); h.append(float(highs[i])); l.append(float(lows[i])); c.append(float(closes[i])); v.append(float(vols[i]))
+            o.append(float(vals[0])); h.append(float(vals[1])); l.append(float(vals[2]))
+            c.append(float(vals[3])); v.append(float(vals[4]))
         if not dates:
             return None
-
         return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": v}
-    except Exception:
+    except:
         return None
+
+def fetch_stooq(symbol: str) -> Optional[Dict[str, List]]:
+    """Fetch daily OHLCV from Stooq.com (no API key required)."""
+    try:
+        url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
+        r = requests.get(url, timeout=10)
+        lines = r.text.strip().split("\n")
+        if len(lines) <= 1:
+            return None
+        dates, o, h, l, c, vol = [], [], [], [], [], []
+        for row in lines[1:]:
+            try:
+                d, op, hi, lo, cl, v = row.split(",")
+                dates.append(parse_date_ymd(d))
+                o.append(float(op)); h.append(float(hi)); l.append(float(lo))
+                c.append(float(cl)); vol.append(float(v))
+            except:
+                continue
+        if not dates:
+            return None
+        return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": vol}
+    except:
+        return None
+
+@st.cache_data(show_spinner=False)
+def get_spy_data(period_days=365, prefer_alpha=True):
+    """Get SPY data with triple fallback: Alpha -> Yahoo -> Stooq."""
+    spy = None
+    if prefer_alpha and ALPHA_VANTAGE_API_KEY:
+        spy = fetch_alpha_vantage("SPY", outsize="full")
+        if spy:
+            return trim_to_period(spy, period_days)
+    if spy is None:
+        spy = fetch_yahoo_json("SPY", period="1y", interval="1d")
+        if spy:
+            return trim_to_period(spy, period_days)
+    if spy is None:
+        spy = fetch_stooq("SPY")
+        if spy:
+            return trim_to_period(spy, period_days)
+    return spy
 
 @st.cache_data(show_spinner=False)
 def get_stock_data(symbol: str, period_days: int = 365, prefer_alpha: bool = True) -> Optional[Dict[str, List]]:
@@ -117,16 +161,7 @@ def get_stock_data(symbol: str, period_days: int = 365, prefer_alpha: bool = Tru
         data = fetch_yahoo_json(wiki_to_yahoo_symbol(symbol), period="1y", interval="1d")
         if data is None:
             data = fetch_alpha_vantage(symbol, outsize="full")
-    if data is None:
-        return None
-    if data["dates"]:
-        cutoff = data["dates"][-1].timestamp() - period_days * 86400
-        keep_idx = [i for i, d in enumerate(data["dates"]) if d.timestamp() >= cutoff]
-        if not keep_idx:
-            return None
-        for k in data:
-            data[k] = [data[k][i] for i in keep_idx]
-    return data
+    return trim_to_period(data, period_days) if data else None
 
 # -------------------
 # S&P 500 scrape
@@ -224,18 +259,15 @@ def plot_vcp(stock, ticker, peaks, troughs):
 # -------------------
 # Streamlit UI
 # -------------------
-st.title("📉 VCP Screener (No pandas) — Minervini-style")
+st.title("📉 VCP Screener (No pandas) — Triple SPY Fallback")
 prefer_alpha = st.toggle("Prefer Alpha Vantage", value=True)
 user_tickers_input = st.text_area("Additional Tickers", value="NVDA,AAPL,MSFT,TSLA")
 run_btn = st.button("Run Screener")
 
 if run_btn:
-    spy = get_stock_data("SPY", period_days=365, prefer_alpha=prefer_alpha)
+    spy = get_spy_data(period_days=365, prefer_alpha=prefer_alpha)
     if spy is None:
-        st.warning("SPY fetch failed from primary, trying Yahoo fallback...")
-        spy = fetch_yahoo_json("SPY", period="1y", interval="1d")
-    if spy is None:
-        st.error("Could not fetch SPY data.")
+        st.error("Could not fetch SPY data from Alpha, Yahoo, or Stooq.")
         st.stop()
 
     sp_list = get_sp500_tickers_and_sectors()
@@ -243,6 +275,7 @@ if run_btn:
         st.error("Could not load S&P 500 tickers.")
         st.stop()
 
+    # Strong sector calculation
     sector_strength = {}
     for sector in sorted(set(sec for _, sec in sp_list)):
         tickers_in_sector = [sym for sym, sec in sp_list if sec == sector]
@@ -261,8 +294,7 @@ if run_btn:
 
     strong_sectors = [sec for sec, val in sector_strength.items() if val > 1.0]
 
-    rejected = []
-    strong_stocks = []
+    rejected, strong_stocks = [], []
     for sym, sec in sp_list:
         if sec not in strong_sectors:
             rejected.append((sym, "WeakSector"))
