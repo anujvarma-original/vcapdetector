@@ -69,38 +69,44 @@ def get_stock_data(ticker, period="6mo"):
 # -------------------
 def detect_vcp(df):
     """Return contraction percentages and peak/trough points."""
-    df = df.copy()
-
-    # Always create max/min columns
-    df['max'] = np.nan
-    df['min'] = np.nan
-
-    # Safety check for required columns
-    if 'High' not in df.columns or 'Low' not in df.columns:
+    # Ensure we have a DataFrame
+    if not isinstance(df, pd.DataFrame):
         return [], [], []
 
-    # Find local peaks and troughs
-    peak_idx = argrelextrema(df['High'].values, np.greater, order=5)[0]
-    trough_idx = argrelextrema(df['Low'].values, np.less, order=5)[0]
+    df = df.copy()
 
-    df.iloc[peak_idx, df.columns.get_loc('max')] = df['High'].iloc[peak_idx]
-    df.iloc[trough_idx, df.columns.get_loc('min')] = df['Low'].iloc[trough_idx]
+    # Always create max/min columns — no matter what
+    df["max"] = np.nan
+    df["min"] = np.nan
 
-    peaks = df.dropna(subset=['max'])
-    troughs = df.dropna(subset=['min'])
+    # Bail early if High/Low missing
+    if "High" not in df.columns or "Low" not in df.columns:
+        return [], [], []
+
+    # Find local peaks/troughs
+    peak_idx = argrelextrema(df["High"].values, np.greater, order=5)[0]
+    trough_idx = argrelextrema(df["Low"].values, np.less, order=5)[0]
+
+    df.iloc[peak_idx, df.columns.get_loc("max")] = df["High"].iloc[peak_idx]
+    df.iloc[trough_idx, df.columns.get_loc("min")] = df["Low"].iloc[trough_idx]
+
+    # These will now never KeyError
+    peaks = df.dropna(subset=["max"])
+    troughs = df.dropna(subset=["min"])
 
     contractions = []
     peak_points, trough_points = [], []
 
     for i in range(min(len(peaks), len(troughs))):
-        peak_price = peaks.iloc[i]['max']
-        trough_price = troughs.iloc[i]['min']
+        peak_price = peaks.iloc[i]["max"]
+        trough_price = troughs.iloc[i]["min"]
         contraction_pct = (peak_price - trough_price) / peak_price * 100
         contractions.append(round(contraction_pct, 2))
         peak_points.append((peaks.index[i], peak_price))
         trough_points.append((troughs.index[i], trough_price))
 
     return contractions, peak_points, trough_points
+
 
 # -------------------
 # PLOTTING
