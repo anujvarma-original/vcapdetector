@@ -9,7 +9,6 @@ from scipy.signal import argrelextrema
 # -------------------
 # CONFIG
 # -------------------
-# API key from Streamlit secrets
 ALPHA_VANTAGE_API_KEY = st.secrets["ALPHAVANTAGE_API_KEY"]
 BASE_URL = "https://www.alphavantage.co/query"
 
@@ -38,8 +37,6 @@ def fetch_alpha_vantage(ticker):
             "4. close": "Close",
             "6. volume": "Volume"
         })
-
-        # Keep only OHLCV and ensure float
         df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
@@ -68,31 +65,29 @@ def get_stock_data(ticker, period="6mo"):
 # VCP DETECTION
 # -------------------
 def detect_vcp(df):
-    """Return contraction percentages and peak/trough points."""
-    # Ensure valid DataFrame
+    """Return contraction percentages and peak/trough points without KeyError."""
     if not isinstance(df, pd.DataFrame):
         return [], [], []
 
     df = df.copy()
 
-    # Always create these columns so dropna() never fails
-    df["max"] = np.nan
-    df["min"] = np.nan
-
-    # If High/Low missing, bail early
     if "High" not in df.columns or "Low" not in df.columns:
         return [], [], []
 
-    # Find local peaks and troughs
+    # Create empty columns for peaks/troughs
+    df["max"] = np.nan
+    df["min"] = np.nan
+
+    # Find local peaks/troughs
     peak_idx = argrelextrema(df["High"].values, np.greater, order=5)[0]
     trough_idx = argrelextrema(df["Low"].values, np.less, order=5)[0]
 
-    df.iloc[peak_idx, df.columns.get_loc("max")] = df["High"].iloc[peak_idx]
-    df.iloc[trough_idx, df.columns.get_loc("min")] = df["Low"].iloc[trough_idx]
+    df.loc[df.index[peak_idx], "max"] = df["High"].iloc[peak_idx]
+    df.loc[df.index[trough_idx], "min"] = df["Low"].iloc[trough_idx]
 
-    # Now these calls will never KeyError
-    peaks = df.dropna(subset=["max"])
-    troughs = df.dropna(subset=["min"])
+    # Filter without dropna() to avoid KeyError
+    peaks = df[df["max"].notna()]
+    troughs = df[df["min"].notna()]
 
     contractions = []
     peak_points, trough_points = [], []
@@ -107,29 +102,28 @@ def detect_vcp(df):
 
     return contractions, peak_points, trough_points
 
-
 # -------------------
 # PLOTTING
 # -------------------
 def plot_vcp(df, ticker, peak_points, trough_points):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12,8), sharex=True, gridspec_kw={'height_ratios':[3,1]})
-    
-    ax1.plot(df.index, df['Close'], label='Close Price', color='blue')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={'height_ratios':[3, 1]})
+
+    ax1.plot(df.index, df["Close"], label="Close Price", color="blue")
     ax1.set_title(f"{ticker} - Volatility Contraction Pattern")
     ax1.set_ylabel("Price")
-    
+
     for date, price in peak_points:
-        ax1.scatter(date, price, color='red', marker='^', s=100)
+        ax1.scatter(date, price, color="red", marker="^", s=100)
     for date, price in trough_points:
-        ax1.scatter(date, price, color='green', marker='v', s=100)
-    
+        ax1.scatter(date, price, color="green", marker="v", s=100)
+
     ax1.legend()
     ax1.grid(True)
-    
-    ax2.bar(df.index, df['Volume'], color='gray')
+
+    ax2.bar(df.index, df["Volume"], color="gray")
     ax2.set_ylabel("Volume")
     ax2.grid(True)
-    
+
     plt.tight_layout()
     st.pyplot(fig)
 
@@ -140,7 +134,7 @@ st.title("📉 Volatility Contraction Pattern (VCP) Screener")
 st.write("Enter comma-separated tickers to scan for VCP patterns.")
 
 tickers_input = st.text_area("Tickers", value="NVDA,AAPL,MSFT,TSLA")
-period = st.selectbox("Period", ["3mo","6mo","1y"], index=1)
+period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1)
 
 if st.button("Run Screener"):
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
@@ -150,10 +144,9 @@ if st.button("Run Screener"):
         df = get_stock_data(ticker, period)
         if df is None or df.empty:
             continue
-        
+
         contractions, peaks, troughs = detect_vcp(df)
         if len(contractions) >= 3:
-            # Check for decreasing contraction pattern
             if contractions[-1] < contractions[-2] < contractions[-3]:
                 results.append({
                     "Ticker": ticker,
