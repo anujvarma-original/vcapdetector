@@ -233,4 +233,81 @@ if run_btn:
     spy = get_stock_data("SPY", period_days=365, prefer_alpha=prefer_alpha)
     if spy is None:
         st.warning("SPY fetch failed from primary, trying Yahoo fallback...")
-        spy = fetch_yahoo_json("SPY", period="1y",
+        spy = fetch_yahoo_json("SPY", period="1y", interval="1d")
+    if spy is None:
+        st.error("Could not fetch SPY data.")
+        st.stop()
+
+    sp_list = get_sp500_tickers_and_sectors()
+    if not sp_list:
+        st.error("Could not load S&P 500 tickers.")
+        st.stop()
+
+    sector_strength = {}
+    for sector in sorted(set(sec for _, sec in sp_list)):
+        tickers_in_sector = [sym for sym, sec in sp_list if sec == sector]
+        ratios = []
+        for sym in tickers_in_sector:
+            sdata = get_stock_data(sym, period_days=365, prefer_alpha=prefer_alpha)
+            if not sdata or len(sdata["close"]) < 50:
+                continue
+            rs_series = align_and_ratio(sdata, spy)
+            if len(rs_series) < 50:
+                continue
+            rs_ma50 = last_sma(rs_series, 50)
+            if rs_ma50:
+                ratios.append(rs_series[-1] / rs_ma50)
+        sector_strength[sector] = float(np.mean(ratios)) if ratios else 0.0
+
+    strong_sectors = [sec for sec, val in sector_strength.items() if val > 1.0]
+
+    rejected = []
+    strong_stocks = []
+    for sym, sec in sp_list:
+        if sec not in strong_sectors:
+            rejected.append((sym, "WeakSector"))
+            continue
+        sdata = get_stock_data(sym, period_days=365, prefer_alpha=prefer_alpha)
+        if not sdata:
+            rejected.append((sym, "NoData"))
+            continue
+        if not relative_strength_ok(sdata, spy):
+            rejected.append((sym, "WeakRS"))
+            continue
+        strong_stocks.append(sym)
+
+    scan_syms = sorted(set([s.strip().upper() for s in user_tickers_input.split(",") if s.strip()] + strong_stocks))
+    results = []
+    for sym in scan_syms:
+        sdata = get_stock_data(sym, period_days=365, prefer_alpha=prefer_alpha)
+        if not sdata:
+            rejected.append((sym, "NoData"))
+            continue
+        cons, peaks, troughs = compute_contractions(sdata["dates"], sdata["high"], sdata["low"], order=5)
+        if not contractions_meet_criteria(cons):
+            rejected.append((sym, "NoVCP"))
+            continue
+        if not volume_dry_up(sdata):
+            rejected.append((sym, "NoVDU"))
+            continue
+        results.append({"Ticker": sym, "LastContractionPct": cons[-1], "Peaks": peaks, "Troughs": troughs, "Data": sdata})
+
+    if results:
+        st.subheader("Candidates")
+        md = "| Ticker | Last Contraction % |\n|---|---|\n"
+        for r in sorted(results, key=lambda x: x["LastContractionPct"]):
+            md += f"| {r['Ticker']} | {round(r['LastContractionPct'], 2)} |\n"
+        st.markdown(md)
+        sel = st.selectbox("Select ticker to view chart", [r["Ticker"] for r in results])
+        pick = next((r for r in results if r["Ticker"] == sel), None)
+        if pick:
+            plot_vcp(pick["Data"], pick["Ticker"], pick["Peaks"], pick["Troughs"])
+    else:
+        st.info("No VCP candidates found.")
+
+    with st.expander("Show rejected tickers with reasons"):
+        if rejected:
+            st.write("**Reasons:** WeakSector, WeakRS, NoData, NoVCP, NoVDU")
+            st.markdown("\n".join(f"- {sym}: {reason}" for sym, reason in rejected))
+        else:
+            st.write("No rejections logged.")
