@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -37,7 +38,7 @@ def trim_to_period(data: Dict[str, List], period_days: int) -> Optional[Dict[str
     keep_idx = [i for i, d in enumerate(data["dates"]) if d.timestamp() >= cutoff]
     if not keep_idx:
         return None
-    for k in data:
+    for k in list(data.keys()):
         data[k] = [data[k][i] for i in keep_idx]
     return data
 
@@ -70,14 +71,14 @@ def fetch_alpha_vantage(symbol: str, outsize: str = "full") -> Optional[Dict[str
                     float(v["4. close"]),
                     float(v["6. volume"])
                 ))
-            except:
+            except Exception:
                 continue
         recs.sort(key=lambda x: x[0])
         if not recs:
             return None
         dates, o, h, l, c, vol = zip(*recs)
         return {"dates": list(dates), "open": list(o), "high": list(h), "low": list(l), "close": list(c), "volume": list(vol)}
-    except:
+    except Exception:
         return None
 
 def fetch_yahoo_json(symbol: str, period: str = "1y", interval: str = "1d") -> Optional[Dict[str, List]]:
@@ -105,7 +106,7 @@ def fetch_yahoo_json(symbol: str, period: str = "1y", interval: str = "1d") -> O
         if not dates:
             return None
         return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": v}
-    except:
+    except Exception:
         return None
 
 def fetch_stooq(symbol: str) -> Optional[Dict[str, List]]:
@@ -122,12 +123,12 @@ def fetch_stooq(symbol: str) -> Optional[Dict[str, List]]:
                 dates.append(parse_date_ymd(d))
                 o.append(float(op)); h.append(float(hi)); l.append(float(lo))
                 c.append(float(cl)); vol.append(float(v))
-            except:
+            except Exception:
                 continue
         if not dates:
             return None
         return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": vol}
-    except:
+    except Exception:
         return None
 
 def fetch_spy_static_csv() -> Optional[Dict[str, List]]:
@@ -145,12 +146,12 @@ def fetch_spy_static_csv() -> Optional[Dict[str, List]]:
                 dates.append(parse_date_ymd(d))
                 o.append(float(op)); h.append(float(hi)); l.append(float(lo))
                 c.append(float(cl)); vol.append(float(v))
-            except:
+            except Exception:
                 continue
         if not dates:
             return None
         return {"dates": dates, "open": o, "high": h, "low": l, "close": c, "volume": vol}
-    except:
+    except Exception:
         return None
 
 @st.cache_data(show_spinner=False)
@@ -188,26 +189,71 @@ def get_stock_data(symbol: str, period_days: int = 365, prefer_alpha: bool = Tru
     return trim_to_period(data, period_days) if data else None
 
 # -------------------
-# S&P scrape
+# S&P scrape (robust, with fallback)
 # -------------------
+def _sp500_static_fallback() -> List[Tuple[str, str]]:
+    # Minimal set so the app still runs even if Wikipedia changes
+    return [
+        ("NVDA", "Information Technology"),
+        ("AAPL", "Information Technology"),
+        ("MSFT", "Information Technology"),
+        ("TSLA", "Consumer Discretionary"),
+    ]
+
 @st.cache_data(show_spinner=False)
 def get_sp500_tickers_and_sectors() -> List[Tuple[str, str]]:
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    r = requests.get(url, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-    table = soup.find("table", {"id": "constituents"}) or soup.find("table", {"class": "wikitable"})
-    rows = table.find_all("tr")
-    headers = [th.get_text(strip=True) for th in rows[0].find_all("th")]
-    sym_idx, sec_idx = headers.index("Symbol"), headers.index("GICS Sector")
-    out = []
-    for tr in rows[1:]:
-        tds = tr.find_all("td")
-        if len(tds) <= max(sym_idx, sec_idx):
-            continue
-        sym = tds[sym_idx].get_text(strip=True).upper()
-        sec = tds[sec_idx].get_text(strip=True)
-        out.append((sym, sec))
-    return out
+    try:
+        r = requests.get(
+            url,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; VCP/1.0)"},
+        )
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # Be flexible about which table we pick
+        table = (
+            soup.find("table", {"id": "constituents"})
+            or soup.select_one("table.wikitable.sortable")
+            or soup.select_one("table.wikitable")
+        )
+        if not table:
+            return _sp500_static_fallback()
+
+        rows = table.find_all("tr")
+        if not rows:
+            return _sp500_static_fallback()
+
+        # Normalize header text
+        headers = [th.get_text(strip=True).lower() for th in rows[0].find_all("th")]
+
+        def find_idx(pred):
+            for i, h in enumerate(headers):
+                if pred(h):
+                    return i
+            return -1
+
+        # Match common variants
+        sym_idx = find_idx(lambda h: "symbol" in h or "ticker" in h)
+        sec_idx = find_idx(lambda h: ("gics" in h and "sector" in h) or h == "sector")
+
+        if sym_idx == -1 or sec_idx == -1:
+            return _sp500_static_fallback()
+
+        out: List[Tuple[str, str]] = []
+        for tr in rows[1:]:
+            tds = tr.find_all("td")
+            if len(tds) <= max(sym_idx, sec_idx):
+                continue
+            sym = tds[sym_idx].get_text(strip=True).upper()
+            sec = tds[sec_idx].get_text(strip=True)
+            out.append((sym, sec))
+        return out if out else _sp500_static_fallback()
+
+    except Exception:
+        # Network or parse error
+        return _sp500_static_fallback()
 
 # -------------------
 # RS & filters
@@ -279,6 +325,7 @@ def plot_vcp(stock, ticker, peaks, troughs):
     ax2.bar(stock["dates"], stock["volume"])
     ax2.set_ylabel("Volume"); ax2.grid(True)
     st.pyplot(fig)
+    plt.close(fig)
 
 # -------------------
 # Streamlit UI
